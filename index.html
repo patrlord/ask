@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Ask your knowledge base</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 640px;
+         margin: 48px auto; padding: 0 16px; color: #1a1a1a; }
+  input, textarea { width: 100%; font: inherit; font-size: 15px; padding: 10px;
+             box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
+  button { padding: 10px 20px; font-size: 15px; border: none;
+           border-radius: 6px; background: #1a1a1a; color: white; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  p.hint { color: #666; font-size: 13px; }
+  .status { margin-top: 10px; font-size: 14px; min-height: 1.2em; color: #666; }
+  .status.error { color: #b3261e; }
+  hr { margin: 32px 0; border: none; border-top: 1px solid #ddd; }
+  #login-row { display: flex; flex-direction: column; gap: 8px; max-width: 320px; }
+  #ask-row { display: flex; gap: 8px; margin-top: 8px; }
+  #ask-row input { flex: 1; }
+  .answer { margin-top: 20px; line-height: 1.6; white-space: pre-wrap; }
+  .uncertainties { margin-top: 12px; font-size: 14px; color: #a66a00; }
+  .sources { margin-top: 20px; }
+  .sources h3 { font-size: 14px; color: #666; margin-bottom: 8px; }
+  .sources ol { padding-left: 20px; margin: 0; }
+  .sources li { font-size: 14px; margin-bottom: 6px; }
+  #signout { background: none; color: #666; padding: 4px 0; font-size: 13px;
+             text-decoration: underline; }
+  #topbar { display: flex; justify-content: space-between; align-items: baseline; }
+</style>
+</head>
+<body>
+<div id="app"><p>Loading…</p></div>
+<script type="module">
+  import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+  const SUPABASE_URL = "https://eyejmvryyiaymrlenhxa.supabase.co";
+  const PUBLISHABLE_KEY = "sb_publishable_QI6BiGiDmlBZwpA_TAq8Qg_uDjoKKKv";
+  const ASK_URL = `${SUPABASE_URL}/functions/v1/ask`;
+
+  const supabase = createClient(SUPABASE_URL, PUBLISHABLE_KEY);
+  const app = document.getElementById("app");
+
+  function el(tag, props = {}, children = []) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(props)) {
+      if (key === "text") node.textContent = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children) node.appendChild(child);
+    return node;
+  }
+
+  function renderLogin() {
+    app.innerHTML = "";
+    const status = el("div", { class: "status" });
+    const emailInput = el("input", { type: "email", placeholder: "Email", autocomplete: "username" });
+    const passwordInput = el("input", { type: "password", placeholder: "Password", autocomplete: "current-password" });
+    const signInBtn = el("button", {
+      text: "Sign in",
+      onclick: async () => {
+        signInBtn.disabled = true;
+        status.className = "status";
+        status.textContent = "Signing in…";
+        const { error } = await supabase.auth.signInWithPassword({
+          email: emailInput.value.trim(),
+          password: passwordInput.value,
+        });
+        if (error) {
+          status.className = "status error";
+          status.textContent = error.message;
+          signInBtn.disabled = false;
+          return;
+        }
+        renderApp();
+      },
+    });
+    passwordInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") signInBtn.click();
+    });
+
+    app.append(
+      el("h2", { text: "Ask your knowledge base" }),
+      el("p", { class: "hint", text: "Sign in with your Personal OS account." }),
+      el("div", { id: "login-row" }, [emailInput, passwordInput, signInBtn]),
+      status,
+    );
+  }
+
+  function renderAnswer(container, data) {
+    container.innerHTML = "";
+    if (!data.answer) {
+      container.append(el("p", { class: "hint", text: (data.uncertainties || []).join(" ") || "No answer." }));
+      return;
+    }
+    container.append(el("div", { class: "answer", text: data.answer }));
+    if (data.uncertainties && data.uncertainties.length) {
+      container.append(
+        el("div", { class: "uncertainties", text: "Uncertain about: " + data.uncertainties.join(" ") }),
+      );
+    }
+    if (data.sources && data.sources.length) {
+      const list = el(
+        "ol",
+        {},
+        data.sources.map((s, i) => {
+          const label = s.item_title || s.item_url || "Untitled";
+          return s.item_url
+            ? el("li", {}, [el("a", { href: s.item_url, target: "_blank", rel: "noopener noreferrer", text: label })])
+            : el("li", { text: label });
+        }),
+      );
+      container.append(el("div", { class: "sources" }, [el("h3", { text: "Sources" }), list]));
+    }
+  }
+
+  async function renderApp() {
+    app.innerHTML = "";
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      renderLogin();
+      return;
+    }
+
+    const signOutBtn = el("button", {
+      id: "signout",
+      text: "Sign out",
+      onclick: async () => {
+        await supabase.auth.signOut();
+        renderLogin();
+      },
+    });
+
+    const status = el("div", { class: "status" });
+    const resultBox = el("div");
+    const queryInput = el("input", { type: "text", placeholder: "Ask a question about your captured knowledge…" });
+    const askBtn = el("button", {
+      text: "Ask",
+      onclick: async () => {
+        const query = queryInput.value.trim();
+        if (!query) return;
+        askBtn.disabled = true;
+        status.className = "status";
+        status.textContent = "Searching…";
+        resultBox.innerHTML = "";
+        try {
+          const res = await fetch(ASK_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${session.access_token}`,
+              apikey: PUBLISHABLE_KEY,
+            },
+            body: JSON.stringify({ query }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          status.textContent = "";
+          renderAnswer(resultBox, data);
+        } catch (err) {
+          status.className = "status error";
+          status.textContent = err.message || "Something went wrong.";
+        } finally {
+          askBtn.disabled = false;
+        }
+      },
+    });
+    queryInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") askBtn.click();
+    });
+
+    app.append(
+      el("div", { id: "topbar" }, [el("h2", { text: "Ask your knowledge base" }), signOutBtn]),
+      el("p", { class: "hint", text: "Searches everything you've captured — articles, newsletters, podcast transcripts — and answers with sources." }),
+      el("div", { id: "ask-row" }, [queryInput, askBtn]),
+      status,
+      resultBox,
+    );
+  }
+
+  renderApp();
+</script>
+</body>
+</html>
