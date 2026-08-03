@@ -29,6 +29,8 @@
   #signout { background: none; color: #666; padding: 4px 0; font-size: 13px;
              text-decoration: underline; }
   #topbar { display: flex; justify-content: space-between; align-items: baseline; }
+  #upload-row { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  #upload-row input[type="file"] { border: none; padding: 0; flex: 1; }
 </style>
 </head>
 <body>
@@ -39,6 +41,7 @@
   const SUPABASE_URL = "https://eyejmvryyiaymrlenhxa.supabase.co";
   const PUBLISHABLE_KEY = "sb_publishable_QI6BiGiDmlBZwpA_TAq8Qg_uDjoKKKv";
   const ASK_URL = `${SUPABASE_URL}/functions/v1/ask`;
+  const UPLOAD_PDF_URL = `${SUPABASE_URL}/functions/v1/upload-pdf`;
 
   const supabase = createClient(SUPABASE_URL, PUBLISHABLE_KEY);
   const app = document.getElementById("app");
@@ -173,12 +176,59 @@
       if (e.key === "Enter") askBtn.click();
     });
 
+    const uploadStatus = el("div", { class: "status" });
+    const fileInput = el("input", { type: "file", accept: "application/pdf" });
+    const uploadBtn = el("button", {
+      text: "Upload",
+      onclick: async () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+        uploadBtn.disabled = true;
+        uploadStatus.className = "status";
+        uploadStatus.textContent = "Uploading…";
+        try {
+          const path = `${session.user.id}/${crypto.randomUUID()}.pdf`;
+          const { error: uploadError } = await supabase.storage
+            .from("item-artifacts")
+            .upload(path, file, { contentType: "application/pdf" });
+          if (uploadError) throw new Error(uploadError.message);
+
+          uploadStatus.textContent = "Extracting text…";
+          const res = await fetch(UPLOAD_PDF_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${session.access_token}`,
+              apikey: PUBLISHABLE_KEY,
+            },
+            body: JSON.stringify({ path, filename: file.name }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          uploadStatus.textContent = data.duplicate
+            ? `Already in your knowledge base: "${data.item.title}".`
+            : `Added "${data.item.title}" — it'll be searchable once enrichment finishes.`;
+          fileInput.value = "";
+        } catch (err) {
+          uploadStatus.className = "status error";
+          uploadStatus.textContent = err.message || "Upload failed.";
+        } finally {
+          uploadBtn.disabled = false;
+        }
+      },
+    });
+
     app.append(
       el("div", { id: "topbar" }, [el("h2", { text: "Ask your knowledge base" }), signOutBtn]),
       el("p", { class: "hint", text: "Searches everything you've captured — articles, newsletters, podcast transcripts — and answers with sources." }),
       el("div", { id: "ask-row" }, [queryInput, askBtn]),
       status,
       resultBox,
+      el("hr"),
+      el("h2", { text: "Upload a PDF" }),
+      el("p", { class: "hint", text: "Adds it to your knowledge base — it'll be summarized and made searchable automatically." }),
+      el("div", { id: "upload-row" }, [fileInput, uploadBtn]),
+      uploadStatus,
     );
   }
 
