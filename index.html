@@ -149,11 +149,21 @@
         status.textContent = "Searching…";
         resultBox.innerHTML = "";
         try {
+          // Re-fetch the session right before the request instead of reusing
+          // the one captured at page load — supabase-js refreshes the token
+          // in the background, but a variable closed over from renderApp()
+          // never picks that up, so a long-open tab was sending an expired
+          // JWT and getting 401s until the page was reloaded.
+          const { data: { session: currentSession } } = await supabase.auth.getSession();
+          if (!currentSession) {
+            renderLogin();
+            return;
+          }
           const res = await fetch(ASK_URL, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${session.access_token}`,
+              Authorization: `Bearer ${currentSession.access_token}`,
               apikey: PUBLISHABLE_KEY,
             },
             body: JSON.stringify({ query }),
