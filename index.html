@@ -7,14 +7,14 @@
 <link rel="icon" type="image/png" href="favicon.png">
 <title>Ask your knowledge base</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 640px;
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 1100px;
          margin: 48px auto; padding: 0 16px; color: #1a1a1a; }
   input, textarea { width: 100%; font: inherit; font-size: 15px; padding: 10px;
              box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
   button { padding: 10px 20px; font-size: 15px; border: none;
            border-radius: 6px; background: #1a1a1a; color: white; cursor: pointer; }
   button:disabled { opacity: 0.5; cursor: default; }
-  p.hint { color: #666; font-size: 13px; }
+  .hint { color: #666; font-size: 13px; }
   .status { margin-top: 10px; font-size: 14px; min-height: 1.2em; color: #666; }
   .status.error { color: #b3261e; }
   hr { margin: 32px 0; border: none; border-top: 1px solid #ddd; }
@@ -30,6 +30,31 @@
   #signout { background: none; color: #666; padding: 4px 0; font-size: 13px;
              text-decoration: underline; }
   #topbar { display: flex; justify-content: space-between; align-items: baseline; }
+
+  #left-header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  #refresh-row { display: flex; align-items: baseline; gap: 10px; }
+  #refresh-btn { background: none; color: #1a1a1a; border: 1px solid #ccc; padding: 4px 10px; font-size: 12px; }
+
+  #layout { display: flex; gap: 32px; align-items: flex-start; margin-top: 20px; }
+  #left { flex: 3; min-width: 0; }
+  #right { flex: 2; min-width: 320px; position: sticky; top: 24px; }
+  @media (max-width: 860px) {
+    #layout { flex-direction: column; }
+    #right { position: static; width: 100%; }
+  }
+  @media (max-width: 640px) {
+    .cat-columns { flex-direction: column; }
+  }
+
+  .cat-columns { display: flex; gap: 16px; }
+  .cat-column { flex: 1; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .category-box { border: 1px solid #e5e5e5; border-radius: 8px; padding: 14px 16px; }
+  .category-box h3 { margin: 0 0 8px; font-size: 14px; }
+  .category-box ul { list-style: none; margin: 0; padding: 0; }
+  .category-box li { margin-bottom: 6px; font-size: 13px; line-height: 1.4; }
+  .category-box li a { color: #1a1a1a; text-decoration: none; }
+  .category-box li a:hover { text-decoration: underline; }
+  .category-box .empty { color: #999; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -40,6 +65,58 @@
   const SUPABASE_URL = "https://eyejmvryyiaymrlenhxa.supabase.co";
   const PUBLISHABLE_KEY = "sb_publishable_QI6BiGiDmlBZwpA_TAq8Qg_uDjoKKKv";
   const ASK_URL = `${SUPABASE_URL}/functions/v1/ask`;
+
+  // Order matters here — first 5 render in the left column, next 5 in the
+  // right column, top to bottom, matching how they were specified.
+  const CATEGORY_COLUMNS = [
+    ["AI", "Deeptech", "SaaS", "VC", "CVC"],
+    ["Secondaries", "Fintech", "Fundraising", "M&A", "Markets"],
+  ];
+
+  // The category grid only needs to feel as fresh as the daily digest email
+  // it complements, not fresh on every page load — refetching an unchanged
+  // "recent captures" list every time someone opens the tab is pure waste.
+  // Cached client-side (localStorage), refreshed automatically once the most
+  // recent 7am boundary has passed since the last fetch, or immediately via
+  // the refresh button. 5:00 UTC matches daily-digest's own send time (7am
+  // CET/CEST, not DST-aware — same known, accepted limitation as that cron).
+  const CACHE_KEY = "personalos_ask_categories_cache_v1";
+  const DIGEST_HOUR_UTC = 5;
+
+  function mostRecentDigestBoundary(now) {
+    const boundary = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), DIGEST_HOUR_UTC, 0, 0));
+    if (boundary.getTime() > now.getTime()) boundary.setUTCDate(boundary.getUTCDate() - 1);
+    return boundary;
+  }
+
+  function readCategoriesCache() {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.fetchedAt || !parsed.categories) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeCategoriesCache(categories) {
+    const entry = { fetchedAt: new Date().toISOString(), categories };
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify(entry));
+    } catch {
+      // Private browsing / quota exceeded — caching is a nice-to-have, not
+      // worth surfacing an error over.
+    }
+    return entry;
+  }
+
+  function formatUpdatedAt(iso) {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+    });
+  }
 
   const supabase = createClient(SUPABASE_URL, PUBLISHABLE_KEY);
   const app = document.getElementById("app");
@@ -156,6 +233,83 @@
     }
   }
 
+  function renderCategoryBox(name, items) {
+    const list = items && items.length
+      ? el("ul", {}, items.map((item) =>
+          el("li", {}, [
+            item.link_url
+              ? el("a", { href: item.link_url, target: "_blank", rel: "noopener noreferrer", text: item.title || "Untitled" })
+              : el("span", { text: item.title || "Untitled" }),
+          ]),
+        ))
+      : el("p", { class: "empty", text: "Nothing captured yet." });
+    return el("div", { class: "category-box" }, [el("h3", { text: name }), list]);
+  }
+
+  function renderCategoryColumns(container, categoriesByName) {
+    container.innerHTML = "";
+    const columns = CATEGORY_COLUMNS.map((names) =>
+      el("div", { class: "cat-column" }, names.map((name) => renderCategoryBox(name, categoriesByName?.[name]))),
+    );
+    container.append(el("div", { class: "cat-columns" }, columns));
+  }
+
+  function renderCategoryPlaceholder(container, text) {
+    container.innerHTML = "";
+    const columns = CATEGORY_COLUMNS.map((names) =>
+      el("div", { class: "cat-column" }, names.map((name) => renderCategoryBox(name, []))),
+    );
+    container.append(
+      el("div", { class: "status", text }),
+      el("div", { class: "cat-columns" }, columns),
+    );
+  }
+
+  async function fetchCategories(accessToken) {
+    const res = await fetch(ASK_URL, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}`, apikey: PUBLISHABLE_KEY },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data.categories || {};
+  }
+
+  // force=true (the refresh button) always hits the network. Otherwise, a
+  // cache entry from at or after the most recent 7am boundary is used as-is
+  // with no network call at all.
+  async function loadCategories(container, updatedLine, refreshBtn, accessToken, force) {
+    const cached = force ? null : readCategoriesCache();
+    if (cached && new Date(cached.fetchedAt) >= mostRecentDigestBoundary(new Date())) {
+      renderCategoryColumns(container, cached.categories);
+      updatedLine.textContent = `Updated ${formatUpdatedAt(cached.fetchedAt)}`;
+      return;
+    }
+
+    if (!cached) renderCategoryPlaceholder(container, "Loading…");
+    updatedLine.textContent = force ? "Refreshing…" : "Updating…";
+    refreshBtn.disabled = true;
+    try {
+      const categories = await fetchCategories(accessToken);
+      const entry = writeCategoriesCache(categories);
+      renderCategoryColumns(container, categories);
+      updatedLine.textContent = `Updated ${formatUpdatedAt(entry.fetchedAt)}`;
+    } catch (err) {
+      const reason = err.message || "something went wrong.";
+      if (cached) {
+        // Keep showing the stale-but-real data rather than blanking the
+        // grid over a failed background refresh.
+        renderCategoryColumns(container, cached.categories);
+        updatedLine.textContent = `Updated ${formatUpdatedAt(cached.fetchedAt)} — refresh failed (${reason})`;
+      } else {
+        renderCategoryPlaceholder(container, `Couldn't load recent items: ${reason}`);
+        updatedLine.textContent = "";
+      }
+    } finally {
+      refreshBtn.disabled = false;
+    }
+  }
+
   async function renderApp() {
     app.innerHTML = "";
 
@@ -222,13 +376,42 @@
       if (e.key === "Enter") askBtn.click();
     });
 
-    app.append(
+    const categoriesBox = el("div");
+    const updatedLine = el("span", { class: "hint" });
+    const refreshBtn = el("button", {
+      id: "refresh-btn",
+      text: "Refresh",
+      onclick: async () => {
+        const { data: { session: currentSession } } = await supabase.auth.getSession();
+        if (!currentSession) {
+          renderLogin();
+          return;
+        }
+        loadCategories(categoriesBox, updatedLine, refreshBtn, currentSession.access_token, true);
+      },
+    });
+    const left = el("div", { id: "left" }, [
+      el("div", { id: "left-header" }, [
+        el("h2", { text: "Recent" }),
+        el("div", { id: "refresh-row" }, [updatedLine, refreshBtn]),
+      ]),
+      categoriesBox,
+    ]);
+    const right = el("div", { id: "right" }, [
       el("div", { id: "topbar" }, [el("h2", { text: "Ask your knowledge base" }), signOutBtn]),
       el("p", { class: "hint", text: "Searches everything you've captured — articles, newsletters, podcast transcripts — and answers with sources." }),
       el("div", { id: "ask-row" }, [queryInput, askBtn]),
       status,
       resultBox,
-    );
+    ]);
+
+    app.append(el("div", { id: "layout" }, [left, right]));
+
+    // Fire in parallel with the render above rather than awaiting it first —
+    // a slow or failed category fetch must never hold up or hide the ask
+    // pane, which should stay usable regardless. force=false here: this is
+    // where the once-a-day cache check actually applies.
+    loadCategories(categoriesBox, updatedLine, refreshBtn, session.access_token, false);
   }
 
   renderApp();
