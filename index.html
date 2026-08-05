@@ -143,7 +143,10 @@
         "ol",
         {},
         data.sources.map((s) => {
-          const label = s.item_title || "Untitled";
+          // Each citation is now its own source entry (not merged per
+          // document), so the same PDF can appear more than once here with
+          // different pages — the page number tells those apart.
+          const label = (s.item_title || "Untitled") + (s.page_number ? ` (page ${s.page_number})` : "");
           return s.link_url
             ? el("li", {}, [el("a", { href: s.link_url, target: "_blank", rel: "noopener noreferrer", text: label })])
             : el("li", { text: label });
