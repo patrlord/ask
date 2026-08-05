@@ -91,13 +91,48 @@
     );
   }
 
+  // Parses **bold** and [n] citation markers into real DOM nodes — built with
+  // createElement/createTextNode rather than innerHTML, so nothing in the
+  // model's output (or a source title) can be interpreted as markup.
+  function renderAnswerText(container, text, sources) {
+    const pattern = /\*\*(.+?)\*\*|\[(\d+)\]/g;
+    let lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        container.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+      }
+      if (match[1] !== undefined) {
+        const strong = document.createElement("strong");
+        strong.textContent = match[1];
+        container.appendChild(strong);
+      } else {
+        const n = Number(match[2]);
+        const source = sources[n - 1];
+        if (source && source.link_url) {
+          container.appendChild(
+            el("a", { href: source.link_url, target: "_blank", rel: "noopener noreferrer", text: `[${n}]` }),
+          );
+        } else {
+          container.appendChild(document.createTextNode(`[${n}]`));
+        }
+      }
+      lastIndex = pattern.lastIndex;
+    }
+    if (lastIndex < text.length) {
+      container.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+  }
+
   function renderAnswer(container, data) {
     container.innerHTML = "";
     if (!data.answer) {
       container.append(el("p", { class: "hint", text: (data.uncertainties || []).join(" ") || "No answer." }));
       return;
     }
-    container.append(el("div", { class: "answer", text: data.answer }));
+    const answerDiv = el("div", { class: "answer" });
+    renderAnswerText(answerDiv, data.answer, data.sources || []);
+    container.append(answerDiv);
     if (data.uncertainties && data.uncertainties.length) {
       container.append(
         el("div", { class: "uncertainties", text: "Uncertain about: " + data.uncertainties.join(" ") }),
@@ -107,10 +142,10 @@
       const list = el(
         "ol",
         {},
-        data.sources.map((s, i) => {
-          const label = s.item_title || s.item_url || "Untitled";
-          return s.item_url
-            ? el("li", {}, [el("a", { href: s.item_url, target: "_blank", rel: "noopener noreferrer", text: label })])
+        data.sources.map((s) => {
+          const label = s.item_title || "Untitled";
+          return s.link_url
+            ? el("li", {}, [el("a", { href: s.link_url, target: "_blank", rel: "noopener noreferrer", text: label })])
             : el("li", { text: label });
         }),
       );
