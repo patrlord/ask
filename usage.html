@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" type="image/png" href="favicon.png">
+<title>API usage</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 1100px;
+         margin: 48px auto; padding: 0 24px; color: #1a1a1a; }
+  input { width: 100%; font: inherit; font-size: 15px; padding: 10px;
+             box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
+  button, select { padding: 8px 14px; font-size: 14px; border: 1px solid #ccc;
+           border-radius: 6px; background: white; color: #1a1a1a; cursor: pointer; }
+  button.primary { background: #1a1a1a; color: white; border: none; padding: 10px 20px; font-size: 15px; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .hint { color: #666; font-size: 13px; }
+  .status { margin-top: 10px; font-size: 14px; min-height: 1.2em; color: #666; }
+  .status.error { color: #b3261e; }
+  #login-row { display: flex; flex-direction: column; gap: 8px; max-width: 320px; }
+  #topbar { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 12px; }
+  #signout { background: none; color: #666; padding: 4px 0; font-size: 13px;
+             text-decoration: underline; border: none; }
+  #controls { display: flex; align-items: center; gap: 10px; margin: 20px 0 8px; }
+  #totals { display: flex; gap: 16px; margin: 20px 0; flex-wrap: wrap; }
+  .stat { border: 1px solid #e5e5e5; border-radius: 8px; padding: 14px 18px; min-width: 140px; }
+  .stat .label { font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 0.03em; }
+  .stat .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  #chart-wrap { position: relative; height: 420px; margin-top: 16px; }
+  #chart-wrap canvas { max-width: 100%; }
+</style>
+</head>
+<body>
+<div id="app"><p>Loading…</p></div>
+<script type="module">
+  import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+  import { Chart } from "https://esm.sh/chart.js@4/auto";
+
+  const SUPABASE_URL = "https://eyejmvryyiaymrlenhxa.supabase.co";
+  const PUBLISHABLE_KEY = "sb_publishable_QI6BiGiDmlBZwpA_TAq8Qg_uDjoKKKv";
+  const HOURS_BACK = 72;
+
+  // Matches the api_usage_log activity_type values written by enrich-items,
+  // ask, daily-digest, and digest-preferences-form.
+  const ACTIVITY_COLORS = {
+    enrichment: "#4338ca",
+    headline_classification: "#8b5cf6",
+    ask_query: "#0e7490",
+    digest_synthesis: "#047857",
+    feed_discovery: "#b45309",
+  };
+  const ACTIVITY_LABELS = {
+    enrichment: "Enrichment",
+    headline_classification: "Headline classification",
+    ask_query: "Ask query",
+    digest_synthesis: "Digest synthesis",
+    feed_discovery: "Feed discovery",
+  };
+  function colorFor(activityType) {
+    return ACTIVITY_COLORS[activityType] || "#666";
+  }
+  function labelFor(activityType) {
+    return ACTIVITY_LABELS[activityType] || activityType;
+  }
+
+  const METRICS = {
+    cost_usd: { label: "Cost ($)", format: (v) => `$${v.toFixed(4)}` },
+    calls: { label: "Calls", format: (v) => String(Math.round(v)) },
+    input_tokens: { label: "Input tokens", format: (v) => Math.round(v).toLocaleString() },
+    output_tokens: { label: "Output tokens", format: (v) => Math.round(v).toLocaleString() },
+  };
+
+  const supabase = createClient(SUPABASE_URL, PUBLISHABLE_KEY);
+  const app = document.getElementById("app");
+
+  function el(tag, props = {}, children = []) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(props)) {
+      if (key === "text") node.textContent = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value);
+    }
+    for (const child of children) node.appendChild(child);
+    return node;
+  }
+
+  function renderLogin() {
+    app.innerHTML = "";
+    const status = el("div", { class: "status" });
+    const emailInput = el("input", { type: "email", placeholder: "Email", autocomplete: "username" });
+    const passwordInput = el("input", { type: "password", placeholder: "Password", autocomplete: "current-password" });
+    const signInBtn = el("button", {
+      class: "primary",
+      text: "Sign in",
+      onclick: async () => {
+        signInBtn.disabled = true;
+        status.className = "status";
+        status.textContent = "Signing in…";
+        const { error } = await supabase.auth.signInWithPassword({
+          email: emailInput.value.trim(),
+          password: passwordInput.value,
+        });
+        if (error) {
+          status.className = "status error";
+          status.textContent = error.message;
+          signInBtn.disabled = false;
+          return;
+        }
+        renderApp();
+      },
+    });
+    passwordInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") signInBtn.click();
+    });
+
+    app.append(
+      el("h2", { text: "API usage" }),
+      el("p", { class: "hint", text: "Sign in with your Personal OS account." }),
+      el("div", { id: "login-row" }, [emailInput, passwordInput, signInBtn]),
+      status,
+    );
+  }
+
+  // Builds the full set of hourly bucket keys for the lookback window, so
+  // hours with zero calls still show up as a gap rather than being skipped
+  // (the RPC only returns rows that actually have usage).
+  function hourlyBucketKeys(hoursBack) {
+    const keys = [];
+    const now = new Date();
+    now.setUTCMinutes(0, 0, 0);
+    for (let i = hoursBack - 1; i >= 0; i--) {
+      const d = new Date(now.getTime() - i * 60 * 60 * 1000);
+      keys.push(d.toISOString().slice(0, 13));
+    }
+    return keys;
+  }
+
+  function formatHourLabel(key) {
+    // key is "YYYY-MM-DDTHH"
+    const d = new Date(key + ":00:00Z");
+    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric" });
+  }
+
+  function buildChartData(rows, metric) {
+    const bucketKeys = hourlyBucketKeys(HOURS_BACK);
+    const activityTypes = [...new Set(rows.map((r) => r.activity_type))].sort();
+
+    // rows[i].hour_bucket -> "YYYY-MM-DDTHH" key, matching bucketKeys' format.
+    const byActivityAndHour = {};
+    for (const row of rows) {
+      const key = new Date(row.hour_bucket).toISOString().slice(0, 13);
+      byActivityAndHour[row.activity_type] ??= {};
+      byActivityAndHour[row.activity_type][key] = row;
+    }
+
+    return {
+      labels: bucketKeys.map(formatHourLabel),
+      datasets: activityTypes.map((type) => ({
+        label: labelFor(type),
+        backgroundColor: colorFor(type),
+        data: bucketKeys.map((key) => Number(byActivityAndHour[type]?.[key]?.[metric] ?? 0)),
+      })),
+    };
+  }
+
+  function computeTotals(rows) {
+    const totals = { calls: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0 };
+    for (const row of rows) {
+      totals.calls += Number(row.calls);
+      totals.input_tokens += Number(row.input_tokens);
+      totals.output_tokens += Number(row.output_tokens);
+      totals.cost_usd += Number(row.cost_usd);
+    }
+    return totals;
+  }
+
+  function renderTotals(container, totals) {
+    container.innerHTML = "";
+    const stats = [
+      { label: "Total cost", value: `$${totals.cost_usd.toFixed(4)}` },
+      { label: "Total calls", value: totals.calls.toLocaleString() },
+      { label: "Input tokens", value: totals.input_tokens.toLocaleString() },
+      { label: "Output tokens", value: totals.output_tokens.toLocaleString() },
+    ];
+    for (const s of stats) {
+      container.append(
+        el("div", { class: "stat" }, [
+          el("div", { class: "label", text: s.label }),
+          el("div", { class: "value", text: s.value }),
+        ]),
+      );
+    }
+  }
+
+  async function renderApp() {
+    app.innerHTML = "";
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      renderLogin();
+      return;
+    }
+
+    const signOutBtn = el("button", {
+      id: "signout",
+      text: "Sign out",
+      onclick: async () => {
+        await supabase.auth.signOut();
+        renderLogin();
+      },
+    });
+
+    const status = el("div", { class: "status" });
+    const totalsBox = el("div", { id: "totals" });
+    const chartWrap = el("div", { id: "chart-wrap" }, [el("canvas")]);
+    const canvas = chartWrap.querySelector("canvas");
+
+    const metricSelect = el("select", {});
+    for (const [key, { label }] of Object.entries(METRICS)) {
+      metricSelect.append(el("option", { value: key, text: label }));
+    }
+
+    let chart = null;
+    let latestRows = [];
+
+    function redraw() {
+      const metric = metricSelect.value;
+      const chartData = buildChartData(latestRows, metric);
+      if (chart) {
+        chart.data = chartData;
+        chart.update();
+        return;
+      }
+      chart = new Chart(canvas, {
+        type: "bar",
+        data: chartData,
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: { stacked: true, ticks: { maxRotation: 60, minRotation: 60, autoSkip: true, maxTicksLimit: 24 } },
+            y: { stacked: true, beginAtZero: true },
+          },
+          plugins: { legend: { position: "bottom" } },
+        },
+      });
+    }
+    metricSelect.addEventListener("change", redraw);
+
+    const refreshBtn = el("button", {
+      text: "Refresh",
+      onclick: () => load(true),
+    });
+
+    async function load(isRefresh) {
+      status.className = "status";
+      status.textContent = isRefresh ? "Refreshing…" : "Loading…";
+      refreshBtn.disabled = true;
+      try {
+        const { data, error } = await supabase.rpc("usage_by_hour", { hours_back: HOURS_BACK });
+        if (error) throw new Error(error.message);
+        latestRows = data || [];
+        renderTotals(totalsBox, computeTotals(latestRows));
+        redraw();
+        status.textContent = latestRows.length
+          ? `Last ${HOURS_BACK}h, updated ${new Date().toLocaleTimeString()}`
+          : `No API usage recorded in the last ${HOURS_BACK}h.`;
+      } catch (err) {
+        status.className = "status error";
+        status.textContent = err.message || "Something went wrong.";
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    }
+
+    app.append(
+      el("div", { id: "topbar" }, [el("h2", { text: "API usage" }), signOutBtn]),
+      el("p", { class: "hint", text: `Claude API calls over the last ${HOURS_BACK} hours, by activity type. Usage older than 72h is pruned automatically.` }),
+      el("div", { id: "controls" }, [metricSelect, refreshBtn]),
+      totalsBox,
+      chartWrap,
+      status,
+    );
+
+    load(false);
+  }
+
+  renderApp();
+</script>
+</body>
+</html>
