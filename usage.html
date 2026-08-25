@@ -48,17 +48,24 @@
   const MONTHS_BACK = 12;
 
   // Matches the api_usage_log activity_type values written by enrich-items,
-  // ask, daily-digest, and digest-preferences-form.
+  // transcribe-podcasts, ask, daily-digest, and digest-preferences-form.
+  // podcast_transcription/podcast_enrichment get warm tones and
+  // enrichment/headline_classification get cool ones, so the podcast
+  // pipeline reads as one visual group distinct from article processing.
   const ACTIVITY_COLORS = {
     enrichment: "#4338ca",
     headline_classification: "#8b5cf6",
+    podcast_transcription: "#b45309",
+    podcast_enrichment: "#d97706",
     ask_query: "#0e7490",
     digest_synthesis: "#047857",
-    feed_discovery: "#b45309",
+    feed_discovery: "#be185d",
   };
   const ACTIVITY_LABELS = {
-    enrichment: "Enrichment",
+    enrichment: "Article enrichment",
     headline_classification: "Headline classification",
+    podcast_transcription: "Podcast transcription",
+    podcast_enrichment: "Podcast enrichment",
     ask_query: "Ask query",
     digest_synthesis: "Digest synthesis",
     feed_discovery: "Feed discovery",
